@@ -417,25 +417,43 @@ function renderDetailsView(id) {
 // --- LONG PRESS utility ---
 function addLongPress(el, onLongPress, ms = 650) {
     let timer = null;
-    let spinEl = null;
+    let overlay = null;
+
+    // Apply permanent selection block to this element
+    el.style.userSelect = 'none';
+    el.style.webkitUserSelect = 'none';
+    el.style.webkitTouchCallout = 'none';
 
     function cleanup() {
         if (timer) { clearTimeout(timer); timer = null; }
-        if (spinEl) { spinEl.remove(); spinEl = null; }
+        if (overlay) { overlay.remove(); overlay = null; }
     }
 
     function start(e) {
         cleanup();
-        // Block text selection
-        el.style.userSelect = 'none';
-        el.style.webkitUserSelect = 'none';
+        // Semi-transparent overlay + centered spinner
+        overlay = document.createElement('div');
+        overlay.style.cssText = [
+            'position:absolute', 'inset:0', 'border-radius:inherit',
+            'background:rgba(0,0,0,0.25)', 'display:flex',
+            'align-items:center', 'justify-content:center',
+            'pointer-events:none', 'z-index:99'
+        ].join(';');
 
-        // Spinning ring overlay
-        spinEl = document.createElement('div');
-        spinEl.style.cssText = `position:absolute;inset:0;border-radius:inherit;border:2.5px solid transparent;
-            border-top-color:#ef4444;animation:lp-spin ${ms}ms linear forwards;pointer-events:none;z-index:99`;
-        el.style.position = 'relative';
-        el.appendChild(spinEl);
+        // Small spinner circle
+        const spin = document.createElement('div');
+        spin.style.cssText = [
+            'width:32px', 'height:32px', 'border-radius:50%',
+            'border:3px solid rgba(255,255,255,0.3)',
+            'border-top-color:#ef4444',
+            `animation:lp-spin ${ms}ms linear forwards`
+        ].join(';');
+        overlay.appendChild(spin);
+
+        if (getComputedStyle(el).position === 'static') {
+            el.style.position = 'relative';
+        }
+        el.appendChild(overlay);
 
         timer = setTimeout(() => {
             cleanup();
