@@ -281,6 +281,7 @@ function setupStackSwiping() {
 
     stackArea.addEventListener('touchmove', e => {
         if (!isDragging || state.cards.length <= 1) return;
+        e.preventDefault(); // block iOS rubber-band bounce
         currentDeltaY = e.touches[0].clientY - startY;
         const total = state.cards.length;
 
@@ -349,19 +350,25 @@ function renderDetailsView(id) {
         container.innerHTML = `<div class="mb-6">${generateCardHTML(card, 'details')}</div>`;
 
         const net = parseNetwork(card.number);
-        // Build rows for copy actions
+        // Build rows for copy actions — icon is either a material symbol name (string) or 'text:...' for plain text
         const rows = [];
-        if (card.number) rows.push({ label: 'Card Number', value: card.number, copyVal: card.number.replace(/\s/g, ''), icon: net ? net.name[0] : '#' });
-        if (card.expiry) rows.push({ label: 'Expiry', value: card.expiry, copyVal: card.expiry, icon: 'event' });
-        if (card.cvv) rows.push({ label: 'CVV', value: '•'.repeat(card.cvv.length), copyVal: card.cvv, icon: 'lock' });
-        if (card.holderName) rows.push({ label: 'Card Holder', value: card.holderName, copyVal: card.holderName, icon: 'person' });
+        const netBadge = net ? net.name.substring(0,2).toUpperCase() : '#';
+        if (card.number) rows.push({ label: 'Card Number', value: card.number, copyVal: card.number.replace(/\s/g, ''), iconType: 'text', icon: netBadge });
+        if (card.expiry) rows.push({ label: 'Expiry', value: card.expiry, copyVal: card.expiry, iconType: 'symbol', icon: 'event' });
+        if (card.cvv) rows.push({ label: 'CVV', value: '\u2022'.repeat(card.cvv.length), copyVal: card.cvv, iconType: 'symbol', icon: 'lock' });
+        if (card.holderName) rows.push({ label: 'Card Holder', value: card.holderName, copyVal: card.holderName, iconType: 'symbol', icon: 'person' });
 
         if (rows.length > 0) {
             container.innerHTML += `<div class="space-y-3">
                 <h3 class="text-slate-900 dark:text-slate-100 text-xs font-bold uppercase tracking-wider px-1 opacity-60">Tap to Copy</h3>
                 ${rows.map(row => `
                     <div class="flex items-center gap-4 bg-white dark:bg-slate-800/60 p-4 rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm cursor-pointer active:scale-[0.98] transition-transform" onclick="copyToClipboard('${row.copyVal}','${row.label}')">
-                        <div class="text-primary flex items-center justify-center rounded-lg bg-primary/10 shrink-0 w-11 h-11 font-bold text-sm">${row.icon}</div>
+                        <div class="text-primary flex items-center justify-center rounded-lg bg-primary/10 shrink-0 w-11 h-11 font-bold text-sm">
+                            ${row.iconType === 'symbol'
+                                ? `<span class="material-symbols-outlined text-xl">${row.icon}</span>`
+                                : `<span style="font-size:11px;letter-spacing:-0.5px">${row.icon}</span>`
+                            }
+                        </div>
                         <div class="flex flex-col flex-1 min-w-0">
                             <p class="text-slate-500 dark:text-slate-400 text-[10px] font-bold uppercase">${row.label}</p>
                             <p class="text-slate-900 dark:text-slate-100 font-bold truncate">${row.value}</p>
@@ -408,14 +415,37 @@ function renderDetailsView(id) {
 }
 
 // --- LONG PRESS utility ---
-function addLongPress(el, onLongPress, ms = 600) {
+function addLongPress(el, onLongPress, ms = 650) {
     let timer = null;
-    el.addEventListener('touchstart', e => {
-        timer = setTimeout(() => { onLongPress(e); timer = null; }, ms);
-    }, { passive: true });
-    el.addEventListener('touchend', () => { if (timer) { clearTimeout(timer); timer = null; } }, { passive: true });
-    el.addEventListener('touchmove', () => { if (timer) { clearTimeout(timer); timer = null; } }, { passive: true });
-    // Desktop: right-click
+    let spinEl = null;
+
+    function cleanup() {
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (spinEl) { spinEl.remove(); spinEl = null; }
+    }
+
+    function start(e) {
+        cleanup();
+        // Block text selection
+        el.style.userSelect = 'none';
+        el.style.webkitUserSelect = 'none';
+
+        // Spinning ring overlay
+        spinEl = document.createElement('div');
+        spinEl.style.cssText = `position:absolute;inset:0;border-radius:inherit;border:2.5px solid transparent;
+            border-top-color:#ef4444;animation:lp-spin ${ms}ms linear forwards;pointer-events:none;z-index:99`;
+        el.style.position = 'relative';
+        el.appendChild(spinEl);
+
+        timer = setTimeout(() => {
+            cleanup();
+            onLongPress(e);
+        }, ms);
+    }
+
+    el.addEventListener('touchstart', start, { passive: true });
+    el.addEventListener('touchend', cleanup, { passive: true });
+    el.addEventListener('touchmove', cleanup, { passive: true });
     el.addEventListener('contextmenu', e => { e.preventDefault(); onLongPress(e); });
 }
 
@@ -768,31 +798,40 @@ document.getElementById('confirm-action-btn').onclick = () => {
     closeConfirmModal();
 };
 
-// --- COPY IMAGE (front and back identical path) ---
+// --- COPY IMAGE: lightbox fallback (no popups needed) ---
 function copyImage(side) {
     const card = state.cards.find(c => c.id === state.currentCardId);
     if (!card) { showToast('Card not found'); return; }
     const str = side === 'front' ? card.imageDataUrlFront : card.imageDataUrlBack;
     if (!str) { showToast('No image'); return; }
-    fetch(str)
-        .then(r => r.blob())
-        .then(blob => {
-            if (typeof ClipboardItem !== 'undefined' && navigator.clipboard && navigator.clipboard.write) {
+
+    // Try native Clipboard API first (works in some browsers)
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard && navigator.clipboard.write) {
+        fetch(str)
+            .then(r => r.blob())
+            .then(blob => {
                 const item = new ClipboardItem({ [blob.type]: blob });
                 return navigator.clipboard.write([item]);
-            }
-            return Promise.reject('no-clipboard');
-        })
-        .then(() => showToast('Image copied'))
-        .catch(() => {
-            const win = window.open();
-            if (win) {
-                win.document.write(`<img src="${str}" style="max-width:100%;display:block;margin:auto" />`);
-                showToast('Opened in new tab — long-press to copy');
-            } else {
-                showToast('Allow popups to open image');
-            }
-        });
+            })
+            .then(() => showToast('Image copied \u2713'))
+            .catch(() => openImageLightbox(str));
+    } else {
+        openImageLightbox(str);
+    }
+}
+
+function openImageLightbox(src) {
+    // Full-screen overlay so user can long-press → Save to Photos on iOS
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.92);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:16px';
+    overlay.innerHTML = `
+        <p style="color:rgba(255,255,255,0.6);font-size:12px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase">Long-press image to save</p>
+        <img src="${src}" style="max-width:92vw;max-height:75vh;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,0.5)" />
+        <button style="margin-top:8px;padding:12px 32px;background:rgba(255,255,255,0.15);color:white;border:none;border-radius:12px;font-size:14px;font-weight:700;letter-spacing:0.02em" onclick="this.parentElement.remove()">Close</button>
+    `;
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+    showToast('Long-press image \u2192 Save to Photos');
 }
 
 function showToast(msg) {
